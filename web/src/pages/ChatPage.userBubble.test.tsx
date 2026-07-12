@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Bubble } from "@/lib/renderItems";
 import { FileViewerContext } from "@/shell/FileViewerContext";
-import { BubbleView } from "./ChatPage";
+import { BubbleView, RevertContext } from "./ChatPage";
 
 // UserBubble renders its text through the same markdown renderer as the
 // assistant bubble (FilePathAwareMessageResponse → Streamdown). These tests
@@ -42,10 +42,18 @@ function assistantBubble(
   };
 }
 
-function renderBubble(bubble: Bubble) {
+function renderBubble(
+  bubble: Bubble,
+  revert: {
+    canRevert: boolean;
+    openRevert: (itemId: string, text: string) => void;
+  } = { canRevert: false, openRevert: () => undefined },
+) {
   return render(
     <FileViewerContext.Provider value={FILE_VIEWER_NOOP}>
-      <BubbleView bubble={bubble} />
+      <RevertContext.Provider value={revert}>
+        <BubbleView bubble={bubble} />
+      </RevertContext.Provider>
     </FileViewerContext.Provider>,
   );
 }
@@ -112,6 +120,18 @@ describe("AssistantBubble lifecycle rendering", () => {
     renderBubble(assistantBubble("completed"));
 
     expect(screen.queryByTestId("assistant-interrupted-indicator")).toBeNull();
+  });
+
+  it("offers revert-and-edit on user messages", () => {
+    const openRevert = vi.fn();
+    renderBubble(userBubble("fix this prompt"), {
+      canRevert: true,
+      openRevert,
+    });
+
+    fireEvent.click(screen.getByTestId("revert-from-message"));
+
+    expect(openRevert).toHaveBeenCalledWith("u1", "fix this prompt");
   });
 });
 

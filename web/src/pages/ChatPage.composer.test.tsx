@@ -240,6 +240,18 @@ describe("Composer slash-command submit routing", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it("opens revert for the last user message instead of sending plaintext", () => {
+    const onSend = vi.fn();
+    const onRevertLastMessage = vi.fn();
+    render(<Composer {...composerProps({ onSend, onRevertLastMessage })} />);
+
+    fireEvent.change(textarea(), { target: { value: "/revert" } });
+    fireEvent.keyDown(textarea(), { key: "Enter" });
+
+    expect(onRevertLastMessage).toHaveBeenCalledOnce();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("routes a known skill whose args carry slashes (paths, URLs)", () => {
     const onSend = vi.fn();
     const onSendSlashCommand = vi.fn();

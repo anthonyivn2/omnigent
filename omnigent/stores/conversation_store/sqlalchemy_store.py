@@ -2487,6 +2487,71 @@ class SqlAlchemyConversationStore(ConversationStore):
 
             return _created_session_from_rows(conversation_row, agent_row, labels)
 
+    def revert_conversation(
+        self,
+        conversation_id: str,
+        *,
+        from_item_id: str,
+    ) -> list[str]:
+        """Delete *from_item_id* and later items in one transaction."""
+        with self._session() as session:
+            row = session.get(SqlConversation, (current_workspace_id(), conversation_id))
+            if row is None:
+                raise LookupError(f"conversation not found: {conversation_id!r}")
+            cutoff = session.execute(
+                select(SqlConversationItem.position).where(
+                    SqlConversationItem.workspace_id == current_workspace_id(),
+                    SqlConversationItem.conversation_id == conversation_id,
+                    SqlConversationItem.id == from_item_id,
+                )
+            ).scalar_one_or_none()
+            if cutoff is None:
+                raise ValueError(
+                    f"item not found in conversation {conversation_id!r}: {from_item_id!r}"
+                )
+            discarded = (
+                session.execute(
+                    select(SqlConversationItem)
+                    .where(
+                        SqlConversationItem.workspace_id == current_workspace_id(),
+                        SqlConversationItem.conversation_id == conversation_id,
+                        SqlConversationItem.position >= cutoff,
+                    )
+                    .order_by(SqlConversationItem.position.asc())
+                )
+                .scalars()
+                .all()
+            )
+            response_ids = list(dict.fromkeys(item.response_id for item in discarded))
+            session.execute(
+                delete(SqlConversationItem).where(
+                    SqlConversationItem.workspace_id == current_workspace_id(),
+                    SqlConversationItem.conversation_id == conversation_id,
+                    SqlConversationItem.position >= cutoff,
+                )
+            )
+            delete_fts_by_conversation(session, conversation_id)
+            remaining = session.execute(
+                select(SqlConversationItem).where(
+                    SqlConversationItem.workspace_id == current_workspace_id(),
+                    SqlConversationItem.conversation_id == conversation_id,
+                )
+            ).scalars()
+            for item in remaining:
+                if item.search_text:
+                    insert_fts(session, item.id, conversation_id, item.search_text)
+            row.next_position = cutoff
+            row.session_state = "{}"
+            row.external_session_id = None
+            row.updated_at = now_epoch()
+            _upsert_labels(
+                session,
+                conversation_id,
+                {FORK_CARRY_HISTORY_LABEL_KEY: "1"},
+                row.updated_at,
+            )
+            return response_ids
+
     def fork_conversation(
         self,
         source_conversation_id: str,

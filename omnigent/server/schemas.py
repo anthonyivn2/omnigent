@@ -2048,6 +2048,15 @@ class SessionForkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class SessionRevertRequest(BaseModel):
+    """Request an in-place revert to before a user message."""
+
+    from_item_id: str
+    restore_files: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ReadStatePutRequest(BaseModel):
     """
     Request body for ``PUT /v1/sessions/{session_id}/read-state``.

@@ -2924,7 +2924,50 @@ def test_set_external_session_id_missing_conversation_raises(
         )
 
 
-# ── Fork conversation ────────────────────────────────
+# ── Revert / fork conversation ──────────────────────
+
+
+def test_revert_conversation_truncates_whole_later_responses(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    conv = conversation_store.create_conversation()
+    for response_id, text_value in (("resp_1", "one"), ("resp_2", "two"), ("resp_3", "three")):
+        conversation_store.append(
+            conv.id,
+            [
+                NewConversationItem(
+                    type="message",
+                    response_id=response_id,
+                    data=MessageData(
+                        role="assistant",
+                        content=[{"type": "output_text", "text": text_value}],
+                        agent="test-agent",
+                    ),
+                )
+            ],
+        )
+    conversation_store.set_session_state(conv.id, {"approval": True})
+    conversation_store.set_external_session_id(conv.id, "native-old")
+
+    second_item_id = conversation_store.list_items(conv.id).data[1].id
+    discarded = conversation_store.revert_conversation(conv.id, from_item_id=second_item_id)
+
+    assert discarded == ["resp_2", "resp_3"]
+    assert [item.response_id for item in conversation_store.list_items(conv.id).data] == ["resp_1"]
+    reverted = conversation_store.get_conversation(conv.id)
+    assert reverted is not None
+    assert reverted.session_state == {}
+    assert reverted.external_session_id is None
+    assert reverted.labels["omnigent.fork.carry_history"] == "1"
+
+
+def test_revert_conversation_rejects_unknown_item(
+    conversation_store: SqlAlchemyConversationStore,
+) -> None:
+    conv = conversation_store.create_conversation()
+
+    with pytest.raises(ValueError, match="item not found"):
+        conversation_store.revert_conversation(conv.id, from_item_id="msg_missing")
 
 
 def test_fork_conversation_copies_items(

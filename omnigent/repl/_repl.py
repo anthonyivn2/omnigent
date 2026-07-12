@@ -4601,7 +4601,7 @@ async def _cmd_help(
     # wall. Commands not listed in a group still render (under "Other"), so a
     # newly registered command is never silently hidden from /help.
     groups: list[tuple[str, list[str]]] = [
-        ("Chat", ["/new", "/clear", "/switch", "/fork", "/history", "/cancel"]),
+        ("Chat", ["/new", "/clear", "/switch", "/fork", "/revert", "/history", "/cancel"]),
         ("Context", ["/compact", "/context", "/model", "/effort"]),
         ("Display", ["/theme"]),
         ("Diagnostics", ["/logs", "/report"]),
@@ -5523,6 +5523,98 @@ async def _cmd_fork(
             f"To return to the previous conversation, run /switch {current_id}[/{fmt.muted}]"
         )
     )
+
+
+@_cmd("/revert", "Revert this session to a previous response")
+async def _cmd_revert(
+    arg: str,
+    session: Session,
+    client: OmnigentClient,
+    host: TerminalHost,
+    fmt: RichBlockFormatter,
+) -> None:
+    """Pick a completed response, confirm, and revert in place."""
+    from prompt_toolkit.shortcuts import button_dialog, radiolist_dialog
+    from rich.text import Text
+
+    current_id = getattr(session, "session_id", None)
+    if current_id is None:
+        host.output(Text.from_markup("  [bold red]/revert requires the sessions API.[/]"))
+        return
+    if arg.strip():
+        host.output(Text.from_markup("  [bold red]Usage: /revert[/]"))
+        return
+    try:
+        items = await _list_all_conversation_items(client, current_id)
+    except Exception as exc:  # noqa: BLE001
+        host.output(Text.from_markup(f"  [bold red]Revert failed: {exc}[/]"))
+        return
+
+    messages: list[tuple[str, str]] = []
+    for item in items:
+        if item.get("type") != "message":
+            continue
+        data = item.get("data")
+        if not isinstance(data, dict) or data.get("role") != "user":
+            continue
+        item_id = item.get("id")
+        if not isinstance(item_id, str):
+            continue
+        text = ""
+        content = data.get("content")
+        if isinstance(content, list):
+            text = " ".join(
+                str(block.get("text", ""))
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "input_text"
+            )
+        preview = " ".join(text.split())[:72] or "User message"
+        messages.append((item_id, preview))
+    if not messages:
+        host.output(
+            Text.from_markup(f"  [{fmt.muted}]No earlier response to revert to.[/{fmt.muted}]")
+        )
+        return
+
+    choice = radiolist_dialog(
+        title="Revert session",
+        text="Choose the message to edit:",
+        values=messages,
+    ).run(in_thread=True)
+    if choice is None:
+        return
+    decision = button_dialog(
+        title="Confirm destructive revert",
+        text="Later conversation history will be permanently deleted.",
+        buttons=[
+            ("Revert history", False),
+            ("Revert + undo file changes", True),
+            ("Cancel", None),
+        ],
+    ).run(in_thread=True)
+    if decision is None:
+        return
+    try:
+        result = await client.sessions.revert(
+            current_id,
+            from_item_id=choice,
+            restore_files=decision,
+        )
+    except Exception as exc:  # noqa: BLE001
+        host.output(Text.from_markup(f"  [bold red]Revert failed: {exc}[/]"))
+        return
+    session.reset()
+    resume_response_id = result.get("resume_response_id")
+    if isinstance(resume_response_id, str):
+        session.resume_from_response(resume_response_id)
+    restored = result.get("restored_files", [])
+    suffix = f" Undid changes in {len(restored)} tracked file(s)." if restored else ""
+    original = dict(messages)[choice]
+    host.output(Text(f"  Session reverted.{suffix} Edit and resend: {original}", style=fmt.muted))
+    prompt = getattr(host, "_prompt", None)
+    if prompt is not None:
+        prompt.default_buffer.text = original
+        prompt.default_buffer.cursor_position = len(original)
 
 
 @_cmd("/history", "Show current conversation history")

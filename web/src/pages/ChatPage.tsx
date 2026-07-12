@@ -28,6 +28,7 @@ import {
   Loader2Icon,
   MessageSquareIcon,
   PaperclipIcon,
+  RotateCcwIcon,
   SquareIcon,
   TerminalIcon,
   WifiOffIcon,
@@ -58,6 +59,14 @@ import { CompactionMarker, RoutingDecisionCard } from "@/components/blocks/Statu
 import { SystemMessageView } from "@/components/blocks/SystemMessage";
 import { parseSystemMessage } from "@/lib/systemMessage";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { OttoIcon } from "@/components/icons/OttoIcon";
 import { cn } from "@/lib/utils";
 import { QueuedMessagesStrip } from "@/pages/QueuedMessagesStrip";
@@ -167,6 +176,7 @@ import { ResumeWithDirectoryDialog } from "@/shell/ResumeWithDirectoryDialog";
 import { ReconnectSessionDialog } from "@/shell/ReconnectSessionDialog";
 import { useTerminalFirst } from "@/shell/TerminalFirstContext";
 import { useForkDialog } from "@/shell/ForkDialogContext";
+import { previewSessionRevert, revertSession } from "@/lib/sessionsApi";
 import { supportsEffortControl } from "@/lib/sessionCapabilities";
 import { isCodexNativeSession } from "@/lib/codexPlanMode";
 import { getCliServerUrl } from "@/lib/host";
@@ -1474,6 +1484,68 @@ function MainAgentSurface({
     () => (pendingElicitations.length === 0 ? bubbles : stripPendingElicitations(bubbles)),
     [bubbles, pendingElicitations.length],
   );
+  const [revertTarget, setRevertTarget] = useState<{ itemId: string; text: string } | null>(null);
+  const [restoreFiles, setRestoreFiles] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [revertError, setRevertError] = useState<string | null>(null);
+  const [revertImpact, setRevertImpact] = useState<{
+    files: number;
+    lines_added: number;
+    lines_removed: number;
+    available: boolean;
+  } | null>(null);
+  const revertPreviewNonce = useRef(0);
+  const canRevert = permissionLevel === null || permissionLevel >= 3;
+  const openRevert = useCallback(
+    (itemId: string, text: string) => {
+      if (!conversationId) return;
+      setRevertTarget({ itemId, text });
+      setRestoreFiles(false);
+      setRevertError(null);
+      setRevertImpact(null);
+      const nonce = ++revertPreviewNonce.current;
+      void previewSessionRevert(conversationId, itemId).then(
+        (impact) => nonce === revertPreviewNonce.current && setRevertImpact(impact),
+        () =>
+          nonce === revertPreviewNonce.current &&
+          setRevertImpact({ files: 0, lines_added: 0, lines_removed: 0, available: false }),
+      );
+    },
+    [conversationId],
+  );
+  const revertContextValue = useMemo(
+    () => ({
+      canRevert,
+      openRevert,
+    }),
+    [canRevert, openRevert],
+  );
+  const lastUserMessage = useMemo(() => {
+    for (let index = streamBubbles.length - 1; index >= 0; index -= 1) {
+      const bubble = streamBubbles[index];
+      if (bubble.kind === "user" && !isSystemBubble(bubble)) return bubble;
+    }
+    return null;
+  }, [streamBubbles]);
+
+  async function confirmRevert() {
+    if (!conversationId || !revertTarget) return;
+    setReverting(true);
+    setRevertError(null);
+    try {
+      await revertSession(conversationId, revertTarget.itemId, restoreFiles);
+      setRevertTarget(null);
+      await useChatStore.getState().switchTo(null);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      sessionDrafts.set(conversationId, { text: revertTarget.text, files: [] });
+      saveDraftsToStorage(sessionDrafts);
+      await useChatStore.getState().switchTo(conversationId);
+    } catch (error) {
+      setRevertError(error instanceof Error ? error.message : "Revert failed");
+    } finally {
+      setReverting(false);
+    }
+  }
 
   // Cmd+Alt+↑/↓ (Ctrl+Alt on win/linux) — guarded so the composer's
   // own unmodified ArrowUp/Down history-recall still works.
@@ -1678,9 +1750,11 @@ function MainAgentSurface({
               )
             ) : (
               <>
-                {streamBubbles.map((bubble) => (
-                  <BubbleView key={bubbleKey(bubble)} bubble={bubble} />
-                ))}
+                <RevertContext.Provider value={revertContextValue}>
+                  {streamBubbles.map((bubble) => (
+                    <BubbleView key={bubbleKey(bubble)} bubble={bubble} />
+                  ))}
+                </RevertContext.Provider>
                 {/* Pending elicitation cards, floated to the bottom of the
                     chat so an outstanding question stays in view (stick-to-
                     bottom) no matter how much text the agent streamed after
@@ -1760,6 +1834,11 @@ function MainAgentSurface({
         onSend={handleSend}
         onSendSlashCommand={handleSendSlashCommand}
         onStop={onStop}
+        onRevertLastMessage={
+          canRevert && lastUserMessage
+            ? () => openRevert(lastUserMessage.itemId, extractUserText(lastUserMessage.content))
+            : undefined
+        }
         agents={agents}
         agentsLoading={agentsLoading}
         selectedAgentId={selectedAgentId}
@@ -1788,6 +1867,48 @@ function MainAgentSurface({
         costRoutingEligible={costRoutingEligible}
         subAgentLabel={subAgentLabel}
       />
+
+      <Dialog open={revertTarget !== null} onOpenChange={(open) => !open && setRevertTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Revert to before this message?</DialogTitle>
+            <DialogDescription>
+              This message and everything after it will be removed. The message will return to the
+              composer so you can edit it. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <label className="flex items-start gap-2 rounded-lg border p-3">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={restoreFiles}
+              onChange={(event) => setRestoreFiles(event.target.checked)}
+            />
+            <span>
+              <span className="block font-medium">Also undo tracked file changes</span>
+              <span className="block text-xs text-muted-foreground">
+                {revertImpact === null
+                  ? "Calculating file changes…"
+                  : revertImpact.available
+                    ? `${revertImpact.files} file${revertImpact.files === 1 ? "" : "s"} · ${revertImpact.lines_added + revertImpact.lines_removed} changed line${revertImpact.lines_added + revertImpact.lines_removed === 1 ? "" : "s"} to undo`
+                    : "Change count unavailable. File undo will safely stop if tracking is incomplete."}
+              </span>
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Only Omnigent file-tool edits are included. Conflicts cancel the file undo.
+              </span>
+            </span>
+          </label>
+          {revertError && <p className="text-sm text-destructive">{revertError}</p>}
+          <DialogFooter>
+            <Button variant="outline" disabled={reverting} onClick={() => setRevertTarget(null)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" disabled={reverting} onClick={() => void confirmRevert()}>
+              {reverting ? "Reverting…" : "Revert and edit"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Chat/Terminal toggle for terminal-first sessions, reconnect-or-
           fork banner when unreachable, nothing otherwise. Sits below the
@@ -2919,6 +3040,11 @@ function CompactionLoadingIndicator() {
   );
 }
 
+export const RevertContext = createContext<{
+  canRevert: boolean;
+  openRevert: (itemId: string, text: string) => void;
+}>({ canRevert: false, openRevert: () => undefined });
+
 // Memoized so a streaming delta (which rebuilds the whole bubble array) only
 // re-renders the bubble that actually changed, not every prior message's
 // markdown/syntax-highlighting subtree. See `bubblesEqual`. Exported for
@@ -3027,6 +3153,7 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
   // Equality selector so Zustand only re-renders the matching bubble.
   const flashing = useChatStore((s) => s.flashItemId === bubble.itemId);
   const { isCopied, handleCopy } = useCopyMessage(() => text);
+  const revert = useContext(RevertContext);
 
   return (
     <Message
@@ -3147,11 +3274,22 @@ function UserBubble({ bubble }: { bubble: Extract<Bubble, { kind: "user" }> }) {
           {text && <FilePathAwareMessageResponse breaks>{text}</FilePathAwareMessageResponse>}
         </MessageContent>
       </div>
-      {text && (
+      {(text || revert.canRevert) && (
         <MessageActions className="mt-1 ml-auto opacity-40 transition-opacity md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100">
-          <MessageAction tooltip="Copy" onClick={handleCopy}>
-            {isCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-          </MessageAction>
+          {text && (
+            <MessageAction tooltip="Copy" onClick={handleCopy}>
+              {isCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+            </MessageAction>
+          )}
+          {revert.canRevert && (
+            <MessageAction
+              tooltip="Revert and edit"
+              data-testid="revert-from-message"
+              onClick={() => revert.openRevert(bubble.itemId, text)}
+            >
+              <RotateCcwIcon size={14} />
+            </MessageAction>
+          )}
         </MessageActions>
       )}
     </Message>
@@ -3174,6 +3312,7 @@ function AssistantBubble({ bubble }: { bubble: Extract<Bubble, { kind: "assistan
   if (bubble.items.length === 0) return null;
 
   const markdownText = collectBubbleMarkdown(bubble.items);
+  const canForkHere = forkDialog?.canFork && bubble.lifecycle !== "streaming";
 
   // Elicitation cards (e.g. AskUserQuestion form) want full chat-column
   // width to match the composer, not the default w-fit shrink-to-content.
@@ -3200,16 +3339,18 @@ function AssistantBubble({ bubble }: { bubble: Extract<Bubble, { kind: "assistan
             <span>Interrupted</span>
           </p>
         )}
-        {markdownText && (
+        {(markdownText || canForkHere) && (
           <MessageActions className="mt-1 opacity-40 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <MessageAction tooltip="Copy" onClick={handleCopy}>
-              {isCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-            </MessageAction>
+            {markdownText && (
+              <MessageAction tooltip="Copy" onClick={handleCopy}>
+                {isCopied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+              </MessageAction>
+            )}
             {/* Fork from this response: clone the session with history
                 truncated after this turn. Hidden while the response is
                 still streaming (its items aren't committed yet) and when
                 the session can't be forked (sub-agent / isolated mount). */}
-            {forkDialog?.canFork && bubble.lifecycle !== "streaming" && (
+            {canForkHere && (
               <MessageAction
                 tooltip="Fork from here"
                 data-testid="fork-from-response"
@@ -3245,6 +3386,7 @@ interface ComposerProps {
    */
   onSendSlashCommand?: (name: string, args: string) => void;
   onStop: () => void;
+  onRevertLastMessage?: () => void;
   agents: Agent[] | undefined;
   agentsLoading: boolean;
   selectedAgentId: string | null;
@@ -3706,6 +3848,7 @@ export function Composer({
   onSend,
   onSendSlashCommand,
   onStop,
+  onRevertLastMessage,
   agents,
   agentsLoading,
   selectedAgentId,
@@ -4154,6 +4297,16 @@ export function Composer({
           });
         return true;
       }
+      case "/revert":
+        dirtyRef.current = true;
+        setValue("");
+        if (onRevertLastMessage) {
+          setCommandError(null);
+          onRevertLastMessage();
+        } else {
+          setCommandError("There is no user message to revert.");
+        }
+        return true;
       case "/context": {
         const state = useChatStore.getState();
         const { contextWindow, llmModel, sessionModelOverride, tokensUsed, blocks } = state;

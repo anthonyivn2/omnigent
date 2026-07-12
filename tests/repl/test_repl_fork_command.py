@@ -183,6 +183,12 @@ async def test_fork_command_registered() -> None:
     )
 
 
+async def test_revert_command_registered() -> None:
+    assert "/revert" in repl_mod.COMMANDS
+    help_text, _ = repl_mod.COMMANDS["/revert"]
+    assert "revert" in help_text.lower()
+
+
 async def test_fork_happy_path_switches_in_place() -> None:
     """
     ``/fork`` calls ``client.sessions.fork()``, prints the old

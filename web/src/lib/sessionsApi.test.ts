@@ -20,6 +20,8 @@ import {
   listRunners,
   openSessionStream,
   postEvent,
+  previewSessionRevert,
+  revertSession,
   SESSION_HISTORY_PAGE_SIZE,
   stopSession,
   updateSession,
@@ -307,6 +309,38 @@ describe("forkSession", () => {
   it("surfaces a non-ok response as a thrown error (e.g. 403 no access)", async () => {
     fetchMock.mockResolvedValueOnce(mockJsonResponse({}, { ok: false, status: 403 }));
     await expect(forkSession("conv_src")).rejects.toThrow(/403/);
+  });
+});
+
+describe("revertSession", () => {
+  it("POSTs the selected user message and tracked-file choice", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockJsonResponse({ restored_files: ["src/app.ts"], resume_response_id: "resp_0" }),
+    );
+
+    const result = await revertSession("conv abc", "msg_1", true);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/v1/sessions/conv%20abc/revert");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      from_item_id: "msg_1",
+      restore_files: true,
+    });
+    expect(result.restored_files).toEqual(["src/app.ts"]);
+  });
+
+  it("loads a file-impact preview for the selected message", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockJsonResponse({ files: 2, lines_added: 3, lines_removed: 1, available: true }),
+    );
+
+    const result = await previewSessionRevert("conv abc", "msg_1");
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/v1/sessions/conv%20abc/revert-preview?from_item_id=msg_1",
+    );
+    expect(result.files).toBe(2);
   });
 });
 

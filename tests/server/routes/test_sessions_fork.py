@@ -110,6 +110,7 @@ class _ConversationStore:
         self._convs = conversations
         self._items = items_by_conv or {}
         self.fork_calls: list[dict[str, Any]] = []
+        self.revert_calls: list[tuple[str, str]] = []
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
         """
@@ -243,6 +244,17 @@ class _ConversationStore:
             has_more=False,
         )
 
+    def revert_conversation(self, conversation_id: str, *, from_item_id: str) -> list[str]:
+        self.revert_calls.append((conversation_id, from_item_id))
+        items = self._items[conversation_id]
+        cutoff = next(index for index, item in enumerate(items) if item.id == from_item_id)
+        discarded = list(dict.fromkeys(item.response_id for item in items[cutoff:]))
+        self._items[conversation_id] = items[:cutoff]
+        return discarded
+
+    def list_child_conversation_ids_by_parent(self, parent_ids: list[str]) -> dict[str, list[str]]:
+        return {parent_id: [] for parent_id in parent_ids}
+
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -347,6 +359,29 @@ def _build_app(
 
 
 # ── Tests ────────────────────────────────────────────────────────
+
+
+def test_revert_session_truncates_in_place() -> None:
+    conv = _make_conversation()
+    items = [
+        _make_item("msg_1", "First", response_id="resp_1"),
+        _make_item("msg_2", "Second", response_id="resp_2"),
+    ]
+    store = _ConversationStore(
+        conversations={"conv_src": conv},
+        items_by_conv={"conv_src": items},
+    )
+    client = TestClient(_build_app(store))
+
+    response = client.post(
+        "/v1/sessions/conv_src/revert",
+        json={"from_item_id": "msg_2", "restore_files": False},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] == "conv_src"
+    assert response.json()["discarded_response_ids"] == ["resp_2"]
+    assert store.revert_calls == [("conv_src", "msg_2")]
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,7 @@ export const BUILTIN_SLASH_COMMANDS: Record<string, string> = {
   "/context": "Show context window usage for this session",
   "/effort": "Set reasoning effort: /effort low | medium | high | default",
   "/model": "Switch the model for this session: /model <name> | default",
+  "/revert": "Undo the last message so you can edit and resend it",
   "/help": "Show available slash commands",
 };
 

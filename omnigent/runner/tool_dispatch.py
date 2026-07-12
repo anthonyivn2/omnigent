@@ -4395,6 +4395,7 @@ async def execute_tool(
     resource_registry: Any | None = None,
     agent_spec: Any | None = None,
     conversation_id: str | None = None,
+    response_id: str | None = None,
     task_id: str | None = None,
     agent_id: str | None = None,
     agent_name: str | None = None,
@@ -4448,6 +4449,7 @@ async def execute_tool(
                 args,
                 agent_spec=agent_spec,
                 conversation_id=conversation_id,
+                response_id=response_id,
                 runner_workspace=runner_workspace,
                 filesystem_registry=filesystem_registry,
             )
@@ -4739,6 +4741,7 @@ async def dispatch_tool_locally(
         resource_registry=resource_registry,
         agent_spec=agent_spec,
         conversation_id=conversation_id,
+        response_id=response_id,
         task_id=task_id,
         agent_id=agent_id,
         agent_name=agent_name,
@@ -4770,7 +4773,6 @@ async def dispatch_tool_locally(
     # body level (the harness has at most one in-flight turn so the
     # ``call_id`` alone keys the parked Future) — kept on the
     # function signature for symmetry with callers that track it.
-    del response_id  # see comment above — intentionally unused
     if not conversation_id:
         raise ValueError(
             "dispatch_tool_locally requires conversation_id to POST the "
@@ -4911,7 +4913,7 @@ async def _seed_os_env_snapshot(
     path: str,
     filesystem_registry: FilesystemRegistry,
     conversation_id: str,
-) -> None:
+) -> str | None:
     """Seed the diff snapshot with *path*'s current content before a write or edit.
 
     Reads the file via *os_env* and passes the content to
@@ -4929,11 +4931,12 @@ async def _seed_os_env_snapshot(
     try:
         existing = await os_env.read(path=path, offset=1, limit=None)
         if isinstance(existing, dict) and "content" in existing:
-            filesystem_registry.seed_snapshot(
-                path, existing["content"], session_id=conversation_id
-            )
+            content = existing["content"]
+            filesystem_registry.seed_snapshot(path, content, session_id=conversation_id)
+            return content
     except Exception:  # noqa: BLE001
         pass  # file does not exist yet or unreadable — no baseline to capture
+    return None
 
 
 async def _execute_os_env_tool(
@@ -4942,6 +4945,7 @@ async def _execute_os_env_tool(
     *,
     agent_spec: Any | None = None,
     conversation_id: str | None = None,
+    response_id: str | None = None,
     runner_workspace: Path | None = None,
     filesystem_registry: FilesystemRegistry | None = None,
 ) -> str:
@@ -4987,8 +4991,11 @@ async def _execute_os_env_tool(
             )
         elif tool_name == SysOsWriteTool.name():
             _path = args.get("path", "")
+            before = None
             if filesystem_registry is not None and conversation_id is not None:
-                await _seed_os_env_snapshot(os_env, _path, filesystem_registry, conversation_id)
+                before = await _seed_os_env_snapshot(
+                    os_env, _path, filesystem_registry, conversation_id
+                )
             result = await os_env.write(path=_path, content=args.get("content", ""))
             if filesystem_registry is not None and conversation_id is not None:
                 # _write_impl returns {"created": True} when the file did not
@@ -4996,10 +5003,17 @@ async def _execute_os_env_tool(
                 was_created = isinstance(result, dict) and result.get("created") is True
                 status = "created" if was_created else "modified"
                 filesystem_registry.record_change(_path, status, conversation_id)
+                if response_id is not None:
+                    filesystem_registry.record_tracked_edit(
+                        conversation_id, response_id, _path, before, args.get("content", "")
+                    )
         elif tool_name == SysOsEditTool.name():
             _path = args.get("path", "")
+            before = None
             if filesystem_registry is not None and conversation_id is not None:
-                await _seed_os_env_snapshot(os_env, _path, filesystem_registry, conversation_id)
+                before = await _seed_os_env_snapshot(
+                    os_env, _path, filesystem_registry, conversation_id
+                )
             result = await os_env.edit(
                 path=_path,
                 old_text=args.get("oldText") or args.get("old_string"),
@@ -5008,6 +5022,12 @@ async def _execute_os_env_tool(
             )
             if filesystem_registry is not None and conversation_id is not None:
                 filesystem_registry.record_change(_path, "modified", conversation_id)
+                if response_id is not None:
+                    after_result = await os_env.read(path=_path, offset=1, limit=None)
+                    after = after_result.get("content") if isinstance(after_result, dict) else None
+                    filesystem_registry.record_tracked_edit(
+                        conversation_id, response_id, _path, before, after
+                    )
         elif tool_name == SysOsShellTool.name():
             result = await os_env.shell(
                 command=args.get("command", ""),

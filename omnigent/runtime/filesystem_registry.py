@@ -24,6 +24,7 @@ defines the full public interface.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import fnmatch
 import logging
 import subprocess
@@ -34,6 +35,15 @@ from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class _TrackedEdit:
+    session_id: str
+    response_id: str
+    path: str
+    before: str | None
+    after: str | None
 
 
 class GitStatusUnavailable(RuntimeError):
@@ -332,6 +342,125 @@ class FilesystemRegistry(ABC):
         :param watch_path: The workspace directory to use as root.
         """
         self._cwd = watch_path.resolve()
+        self._tracked_edits: list[_TrackedEdit] = []
+        self._tracked_edits_lock = threading.Lock()
+
+    def record_tracked_edit(
+        self,
+        session_id: str,
+        response_id: str,
+        path: str,
+        before: str | None,
+        after: str | None,
+    ) -> None:
+        """Record one successful Omnigent file-tool mutation."""
+        norm = _normalize_path(path, self._cwd)
+        if norm is None or _is_ephemeral(norm):
+            return
+        with self._tracked_edits_lock:
+            self._tracked_edits.append(_TrackedEdit(session_id, response_id, norm, before, after))
+
+    def revert_tracked_edits(
+        self,
+        session_id: str,
+        response_ids: set[str],
+        *,
+        expected_edits: int,
+    ) -> list[str]:
+        """Undo tracked edits for discarded responses after conflict checks."""
+        with self._tracked_edits_lock:
+            edits = [
+                edit
+                for edit in self._tracked_edits
+                if edit.session_id == session_id and edit.response_id in response_ids
+            ]
+        if len(edits) != expected_edits:
+            raise ValueError(
+                "Tracked file history is incomplete; file restoration is unavailable "
+                "for this revert"
+            )
+
+        by_path: dict[str, list[_TrackedEdit]] = {}
+        for edit in edits:
+            by_path.setdefault(edit.path, []).append(edit)
+
+        targets: dict[Path, str | None] = {}
+        current: dict[Path, str | None] = {}
+        for path, path_edits in by_path.items():
+            absolute = (self._cwd / path).resolve()
+            try:
+                absolute.relative_to(self._cwd)
+            except ValueError as exc:
+                raise ValueError(f"Tracked path escapes the workspace: {path!r}") from exc
+            try:
+                actual = absolute.read_text()
+            except FileNotFoundError:
+                actual = None
+            except (OSError, UnicodeError) as exc:
+                raise ValueError(f"Cannot safely restore tracked file {path!r}: {exc}") from exc
+            if actual != path_edits[-1].after:
+                raise ValueError(
+                    f"Tracked file {path!r} changed after the session edit; no files were restored"
+                )
+            current[absolute] = actual
+            targets[absolute] = path_edits[0].before
+
+        changed: list[Path] = []
+        try:
+            for path, target in targets.items():
+                if target is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(target)
+                changed.append(path)
+        except OSError:
+            for path in reversed(changed):
+                prior = current[path]
+                if prior is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(prior)
+            raise
+
+        with self._tracked_edits_lock:
+            self._tracked_edits = [
+                edit
+                for edit in self._tracked_edits
+                if not (edit.session_id == session_id and edit.response_id in response_ids)
+            ]
+        return sorted(path.relative_to(self._cwd).as_posix() for path in targets)
+
+    def preview_tracked_edits(
+        self,
+        session_id: str,
+        response_ids: set[str],
+        *,
+        expected_edits: int,
+    ) -> dict[str, int]:
+        """Count the net file and line changes that would be undone."""
+        with self._tracked_edits_lock:
+            edits = [
+                edit
+                for edit in self._tracked_edits
+                if edit.session_id == session_id and edit.response_id in response_ids
+            ]
+        if len(edits) != expected_edits:
+            raise ValueError("Tracked file history is incomplete")
+        by_path: dict[str, list[_TrackedEdit]] = {}
+        for edit in edits:
+            by_path.setdefault(edit.path, []).append(edit)
+        added = removed = 0
+        for path_edits in by_path.values():
+            before = (path_edits[0].before or "").splitlines()
+            after = (path_edits[-1].after or "").splitlines()
+            for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, before, after).get_opcodes():
+                if tag in {"replace", "delete"}:
+                    removed += i2 - i1
+                if tag in {"replace", "insert"}:
+                    added += j2 - j1
+        return {"files": len(by_path), "lines_added": added, "lines_removed": removed}
 
     # ── Concrete: workspace root ───────────────────────────────────
 
@@ -390,7 +519,10 @@ class FilesystemRegistry(ABC):
         :param conversation_id: The conversation to remove,
             e.g. ``"conv_abc123"``.
         """
-        return
+        with self._tracked_edits_lock:
+            self._tracked_edits = [
+                edit for edit in self._tracked_edits if edit.session_id != conversation_id
+            ]
 
     def start(self) -> None:
         """Start any background observers.  Idempotent."""
@@ -524,6 +656,7 @@ class AgentEditFilesystemRegistry(FilesystemRegistry):
         :param conversation_id: The conversation to remove,
             e.g. ``"conv_abc123"``.
         """
+        super().unregister_conversation(conversation_id)
         with self._lock:
             self._session_events.pop(conversation_id, None)
         with self._snapshots_lock:

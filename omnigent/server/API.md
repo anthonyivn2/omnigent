@@ -1058,6 +1058,30 @@ which is what policy ASK gates rely on, so the verdict cannot be
 conflated with a generic session event. Any value other than
 `action: "accept"` denies.
 
+### Revert Session
+
+```
+POST /v1/sessions/{session_id}/revert
+Content-Type: application/json
+
+{
+  "from_item_id": "msg_abc123",
+  "restore_files": false
+}
+```
+
+Destructively removes the selected user message and everything after it, so a
+client can place that message back in its composer for editing. Requires manage
+access. The live runtime is reset first so the next turn rebuilds from the
+retained canonical history; cumulative usage remains. Use
+`GET /v1/sessions/{session_id}/revert-preview?from_item_id=msg_abc123` to show
+the tracked file and changed-line impact before confirmation.
+When `restore_files` is true, response-scoped `sys_os_write` and `sys_os_edit`
+changes are undone only when Omnigent has complete tracking and the current
+files still match its last edits. Conflicts leave files untouched and return
+409. File restoration is forward-only; older or restarted sessions without a
+complete in-memory edit record are rejected.
+
 ### Fork Session
 
 ```

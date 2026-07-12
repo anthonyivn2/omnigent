@@ -4899,6 +4899,26 @@
         "title": "SessionResponse",
         "type": "object"
       },
+      "SessionRevertRequest": {
+        "additionalProperties": false,
+        "description": "Request an in-place revert to before a user message.",
+        "properties": {
+          "from_item_id": {
+            "title": "From Item Id",
+            "type": "string"
+          },
+          "restore_files": {
+            "default": false,
+            "title": "Restore Files",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "from_item_id"
+        ],
+        "title": "SessionRevertRequest",
+        "type": "object"
+      },
       "SessionSandboxStatusEvent": {
         "description": "Managed-sandbox launch progress for a `host_type=\"managed\"` session.\n\nA managed create returns before its sandbox exists; the Omnigent\nserver emits this event as the background launch pipeline advances\nso the Web UI can show live provisioning progress on the session\npage instead of a silent dead chat: sandbox provision \u2192 repository\nclone \u2192 host startup \u2192 runner connect \u2192 ready, or a terminal\nfailure with the reason.",
         "properties": {
@@ -10738,6 +10758,115 @@
         "summary": "Get Session Resource",
         "tags": [
           "session_resources"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/revert": {
+      "post": {
+        "description": "Remove a user message and everything after it so it can be edited.",
+        "operationId": "revert_session_v1_sessions__session_id__revert_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionRevertRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revert Session V1 Sessions  Session Id  Revert Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revert Session",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/v1/sessions/{session_id}/revert-preview": {
+      "get": {
+        "description": "Return the tracked-file impact of reverting from a user message.",
+        "operationId": "preview_revert_session_v1_sessions__session_id__revert_preview_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "from_item_id",
+            "required": true,
+            "schema": {
+              "title": "From Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Revert Session V1 Sessions  Session Id  Revert Preview Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Revert Session",
+        "tags": [
+          "sessions"
         ]
       }
     },

@@ -522,6 +522,38 @@ export async function forkSession(
   return sessionFromWire(await readJsonOrThrow<SessionResponseWire>(res));
 }
 
+export async function revertSession(
+  sessionId: string,
+  fromItemId: string,
+  restoreFiles: boolean,
+): Promise<{ restored_files: string[]; resume_response_id: string | null }> {
+  const res = await authenticatedFetch(`/v1/sessions/${encodeURIComponent(sessionId)}/revert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from_item_id: fromItemId,
+      restore_files: restoreFiles,
+    }),
+  });
+  return readJsonOrThrow<{ restored_files: string[]; resume_response_id: string | null }>(res);
+}
+
+export async function previewSessionRevert(
+  sessionId: string,
+  fromItemId: string,
+): Promise<{
+  files: number;
+  lines_added: number;
+  lines_removed: number;
+  available: boolean;
+}> {
+  const query = new URLSearchParams({ from_item_id: fromItemId });
+  const res = await authenticatedFetch(
+    `/v1/sessions/${encodeURIComponent(sessionId)}/revert-preview?${query}`,
+  );
+  return readJsonOrThrow(res);
+}
+
 /**
  * Switch an existing session in place to a different agent/harness:
  * ``POST /v1/sessions/{id}/switch-agent``.

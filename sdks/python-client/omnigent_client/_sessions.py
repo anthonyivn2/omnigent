@@ -947,6 +947,24 @@ class SessionsNamespace:
             {"type": "compact", "data": {}},
         )
 
+    async def revert(
+        self,
+        session_id: str,
+        *,
+        from_item_id: str,
+        restore_files: bool = False,
+    ) -> dict[str, Any]:
+        """Remove a user message and later history so it can be edited."""
+        resp = await self._http.post(
+            f"{self._base}/v1/sessions/{session_id}/revert",
+            json={
+                "from_item_id": from_item_id,
+                "restore_files": restore_files,
+            },
+        )
+        raise_for_status(resp.status_code, response_body(resp))
+        return require_json_object(resp, f"POST /v1/sessions/{session_id}/revert")
+
     async def interrupt(self, session_id: str) -> None:
         """
         Interrupt a running session.

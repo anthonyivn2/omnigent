@@ -926,3 +926,47 @@ def test_unquote_git_path(raw: str, expected: str) -> None:
     assert result == expected, (
         f"_unquote_git_path({raw!r}) returned {result!r}, expected {expected!r}."
     )
+
+
+def test_revert_tracked_edits_restores_response_boundary(tmp_path: Path) -> None:
+    path = tmp_path / "app.py"
+    path.write_text("one")
+    reg = AgentEditFilesystemRegistry(watch_path=tmp_path)
+    reg.record_tracked_edit("conv", "resp_2", "app.py", "one", "two")
+    path.write_text("two")
+    reg.record_tracked_edit("conv", "resp_3", "app.py", "two", "three")
+    path.write_text("three")
+
+    restored = reg.revert_tracked_edits("conv", {"resp_2", "resp_3"}, expected_edits=2)
+
+    assert restored == ["app.py"]
+    assert path.read_text() == "one"
+
+
+def test_preview_tracked_edits_counts_net_files_and_lines(tmp_path: Path) -> None:
+    reg = AgentEditFilesystemRegistry(tmp_path)
+    reg.record_tracked_edit("conv", "resp_2", "app.py", "one\ntwo\n", "one\nthree\n")
+    reg.record_tracked_edit("conv", "resp_3", "notes.md", None, "new\nlines\n")
+
+    impact = reg.preview_tracked_edits("conv", {"resp_2", "resp_3"}, expected_edits=2)
+
+    assert impact == {"files": 2, "lines_added": 3, "lines_removed": 1}
+
+
+def test_revert_tracked_edits_rejects_conflicting_file(tmp_path: Path) -> None:
+    path = tmp_path / "app.py"
+    path.write_text("user change")
+    reg = AgentEditFilesystemRegistry(watch_path=tmp_path)
+    reg.record_tracked_edit("conv", "resp_2", "app.py", "one", "two")
+
+    with pytest.raises(ValueError, match="changed after the session edit"):
+        reg.revert_tracked_edits("conv", {"resp_2"}, expected_edits=1)
+
+    assert path.read_text() == "user change"
+
+
+def test_revert_tracked_edits_requires_complete_history(tmp_path: Path) -> None:
+    reg = AgentEditFilesystemRegistry(watch_path=tmp_path)
+
+    with pytest.raises(ValueError, match="history is incomplete"):
+        reg.revert_tracked_edits("conv", {"resp_old"}, expected_edits=1)

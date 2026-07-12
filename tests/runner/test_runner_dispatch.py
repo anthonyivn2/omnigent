@@ -1908,6 +1908,38 @@ async def test_runner_os_env_tools_use_agent_spec_cwd() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_os_env_write_records_response_scoped_revert(tmp_path: Path) -> None:
+    from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
+    from omnigent.runner.tool_dispatch import _execute_os_env_tool
+    from omnigent.runtime.filesystem_registry import AgentEditFilesystemRegistry
+    from omnigent.spec.types import AgentSpec
+
+    path = tmp_path / "app.py"
+    path.write_text("before")
+    registry = AgentEditFilesystemRegistry(tmp_path)
+    spec = AgentSpec(
+        spec_version=1,
+        os_env=OSEnvSpec(
+            type="caller_process",
+            cwd=str(tmp_path),
+            sandbox=OSEnvSandboxSpec(type="none"),
+        ),
+    )
+
+    await _execute_os_env_tool(
+        "sys_os_write",
+        {"path": "app.py", "content": "after"},
+        agent_spec=spec,
+        conversation_id="conv_1",
+        response_id="resp_2",
+        filesystem_registry=registry,
+    )
+
+    registry.revert_tracked_edits("conv_1", {"resp_2"}, expected_edits=1)
+    assert path.read_text() == "before"
+
+
+@pytest.mark.asyncio
 async def test_runner_os_env_placeholder_cwd_uses_cli_workspace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

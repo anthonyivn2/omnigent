@@ -253,6 +253,7 @@ from omnigent.server.schemas import (
     SessionResourceObject,
     SessionResourcePaginatedList,
     SessionResponse,
+    SessionRevertRequest,
     SessionSandboxStatusEvent,
     SessionSkillsEvent,
     SessionStatusEvent,
@@ -15601,6 +15602,193 @@ def create_sessions_router(
             liveness_lookup=liveness_lookup,
             runner_exit_reports=runner_exit_reports,
         )
+
+    async def _revert_details(session_id: str, from_item_id: str) -> dict[str, Any]:
+        page = await asyncio.to_thread(conversation_store.list_items, session_id, limit=10000)
+        if page.has_more:
+            raise OmnigentError("Session is too large to revert safely", code=ErrorCode.CONFLICT)
+        items = page.data
+        try:
+            target_index = next(
+                index for index, item in enumerate(items) if item.id == from_item_id
+            )
+        except StopIteration as exc:
+            raise OmnigentError("User message not found", code=ErrorCode.INVALID_INPUT) from exc
+        target = items[target_index]
+        if target.type != "message" or getattr(target.data, "role", None) != "user":
+            raise OmnigentError(
+                "The revert target must be a user message",
+                code=ErrorCode.INVALID_INPUT,
+            )
+        discarded = items[target_index:]
+        return {
+            "items": discarded,
+            "response_ids": list(dict.fromkeys(item.response_id for item in discarded)),
+            "expected_edits": sum(
+                item.type == "function_call"
+                and getattr(item.data, "name", None) in {"sys_os_write", "sys_os_edit"}
+                for item in discarded
+            ),
+            "resume_response_id": items[target_index - 1].response_id if target_index else None,
+            "created_at": target.created_at,
+        }
+
+    # ── POST /sessions/{session_id}/revert ──────────────────────
+
+    @router.post("/sessions/{session_id}/revert")
+    async def revert_session(
+        request: Request,
+        session_id: str,
+        body: SessionRevertRequest,
+    ) -> dict[str, Any]:
+        """Remove a user message and everything after it so it can be edited."""
+        user_id = _get_user_id(request, auth_provider)
+        access = await _require_access_and_level(
+            user_id, session_id, LEVEL_MANAGE, permission_store, conversation_store
+        )
+        conv = access.conversation or await asyncio.to_thread(
+            conversation_store.get_conversation, session_id
+        )
+        if conv is None:
+            raise OmnigentError("Session not found", code=ErrorCode.NOT_FOUND)
+        if conv.kind == "sub_agent":
+            raise OmnigentError(
+                "Sub-agent sessions cannot be reverted directly",
+                code=ErrorCode.INVALID_INPUT,
+            )
+
+        details = await _revert_details(session_id, body.from_item_id)
+        discarded_response_ids = details["response_ids"]
+        expected_edits = details["expected_edits"]
+
+        # Confirmation belongs to the invoking UI. Once it arrives, drop any
+        # live/native runtime so the next turn cold-starts from the truncated
+        # canonical transcript instead of appending to stale native history.
+        runner_client = await _get_runner_client(session_id, runner_router)
+        if runner_client is not None:
+            try:
+                reset_response = await runner_client.post(
+                    f"/v1/sessions/{session_id}/events",
+                    json={"type": "revert_session"},
+                    timeout=10.0,
+                )
+            except (httpx.HTTPError, ConnectionError) as exc:
+                raise OmnigentError(
+                    "The session runtime could not be reset for revert",
+                    code=ErrorCode.CONFLICT,
+                ) from exc
+            if reset_response.status_code >= 400:
+                raise OmnigentError(
+                    "The session runtime refused the revert",
+                    code=ErrorCode.CONFLICT,
+                )
+
+        restored_files: list[str] = []
+        if body.restore_files and expected_edits:
+            if runner_client is None:
+                raise OmnigentError(
+                    "Tracked file restoration requires the session runner to be online",
+                    code=ErrorCode.CONFLICT,
+                )
+            try:
+                restore_response = await runner_client.post(
+                    f"/v1/sessions/{session_id}/revert-tracked-files",
+                    json={
+                        "response_ids": discarded_response_ids,
+                        "expected_edits": expected_edits,
+                    },
+                    timeout=30.0,
+                )
+            except (httpx.HTTPError, ConnectionError) as exc:
+                raise OmnigentError(
+                    "Tracked file restoration could not reach the session runner",
+                    code=ErrorCode.CONFLICT,
+                ) from exc
+            restore_body = restore_response.json()
+            if restore_response.status_code != 200:
+                raise OmnigentError(
+                    restore_body.get("error", {}).get("message", "Tracked file restore failed"),
+                    code=ErrorCode.CONFLICT,
+                )
+            restored_files = restore_body.get("restored_files", [])
+
+        await asyncio.to_thread(
+            conversation_store.revert_conversation,
+            session_id,
+            from_item_id=body.from_item_id,
+        )
+        child_ids = await asyncio.to_thread(
+            conversation_store.list_child_conversation_ids_by_parent,
+            [session_id],
+        )
+        for child_id in child_ids.get(session_id, []):
+            child = await asyncio.to_thread(conversation_store.get_conversation, child_id)
+            if child is not None and child.created_at > details["created_at"]:
+                child_runner = await _get_runner_client(child_id, runner_router)
+                if child_runner is not None:
+                    with contextlib.suppress(httpx.HTTPError, ConnectionError):
+                        await child_runner.post(
+                            f"/v1/sessions/{child_id}/events",
+                            json={"type": "stop_session"},
+                            timeout=5.0,
+                        )
+                await conversation_store.delete_conversation(child_id)
+        while pending_inputs.resolve_oldest(session_id) is not None:
+            pass
+        for elicitation in pending_elicitations.snapshot_for(session_id):
+            elicitation_id = elicitation.get("elicitation_id")
+            if isinstance(elicitation_id, str):
+                pending_elicitations.resolve(session_id, elicitation_id)
+        inflight_text.discard(session_id)
+        _publish_status(session_id, "idle")
+        if restored_files:
+            _publish_changed_files_invalidated(session_id)
+        return {
+            "id": session_id,
+            "from_item_id": body.from_item_id,
+            "resume_response_id": details["resume_response_id"],
+            "discarded_response_ids": discarded_response_ids,
+            "restored_files": restored_files,
+        }
+
+    @router.get("/sessions/{session_id}/revert-preview")
+    async def preview_revert_session(
+        request: Request,
+        session_id: str,
+        from_item_id: str,
+    ) -> dict[str, Any]:
+        """Return the tracked-file impact of reverting from a user message."""
+        user_id = _get_user_id(request, auth_provider)
+        await _require_access_and_level(
+            user_id, session_id, LEVEL_MANAGE, permission_store, conversation_store
+        )
+        details = await _revert_details(session_id, from_item_id)
+        expected_edits = details["expected_edits"]
+        impact: dict[str, Any] = {
+            "files": 0,
+            "lines_added": 0,
+            "lines_removed": 0,
+            "available": True,
+        }
+        if not expected_edits:
+            return impact
+        runner_client = await _get_runner_client(session_id, runner_router)
+        if runner_client is None:
+            return {**impact, "available": False}
+        try:
+            response = await runner_client.post(
+                f"/v1/sessions/{session_id}/revert-tracked-files/preview",
+                json={
+                    "response_ids": details["response_ids"],
+                    "expected_edits": expected_edits,
+                },
+                timeout=10.0,
+            )
+        except (httpx.HTTPError, ConnectionError):
+            return {**impact, "available": False}
+        if response.status_code != 200:
+            return {**impact, "available": False}
+        return {**response.json(), "available": True}
 
     # ── POST /sessions/{source_id}/fork ─────────────────────────
 

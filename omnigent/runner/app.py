@@ -15159,6 +15159,24 @@ def create_runner_app(
             await _cancel_inprocess_turn(conversation_id)
             return Response(status_code=204)
 
+        if body_type == "revert_session":
+            # Drop every live runtime surface before the server truncates the
+            # canonical transcript. The next turn cold-starts from that
+            # truncated history (including native transcript rebuilds).
+            await _cancel_inprocess_turn(conversation_id)
+            await _teardown_session_terminals(conversation_id)
+            await _cancel_auto_forwarder_task(conversation_id)
+            if process_manager is not None:
+                await process_manager.release(conversation_id)
+            _session_snapshot_cache.pop(conversation_id, None)
+            _session_spec_cache.pop(conversation_id, None)
+            _session_message_buffers.pop(conversation_id, None)
+            inbox = _session_inboxes.get(conversation_id)
+            if inbox is not None:
+                while not inbox.empty():
+                    inbox.get_nowait()
+            return Response(status_code=204)
+
         if body_type == "effort_change":
             # Omnigent server forwards the persisted reasoning_effort here
             # so harnesses that can't re-read it from store at turn
@@ -16932,6 +16950,73 @@ def create_runner_app(
             status_code=200,
             content={"object": "list", "data": data, "has_more": False},
         )
+
+    @app.post("/v1/sessions/{session_id}/revert-tracked-files")
+    async def revert_tracked_files(session_id: str, request: Request) -> JSONResponse:
+        """Restore file-tool edits belonging to responses being discarded."""
+        await _require_os_env(session_id)
+        await _ensure_session_registered(session_id)
+        body = await request.json()
+        response_ids = body.get("response_ids")
+        expected_edits = body.get("expected_edits")
+        if (
+            not isinstance(response_ids, list)
+            or not all(isinstance(value, str) for value in response_ids)
+            or not isinstance(expected_edits, int)
+            or expected_edits < 0
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "invalid_input", "message": "Invalid revert body"}},
+            )
+        registry = await _resolve_session_fs_registry(session_id)
+        if registry is None:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "error": {
+                        "code": "file_restore_unavailable",
+                        "message": "Tracked file restoration is unavailable for this session",
+                    }
+                },
+            )
+        try:
+            restored = await asyncio.to_thread(
+                registry.revert_tracked_edits,
+                session_id,
+                set(response_ids),
+                expected_edits=expected_edits,
+            )
+        except (OSError, ValueError) as exc:
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "file_restore_conflict", "message": str(exc)}},
+            )
+        return JSONResponse(status_code=200, content={"restored_files": restored})
+
+    @app.post("/v1/sessions/{session_id}/revert-tracked-files/preview")
+    async def preview_revert_tracked_files(session_id: str, request: Request) -> JSONResponse:
+        """Count tracked changes that a revert would undo."""
+        await _require_os_env(session_id)
+        await _ensure_session_registered(session_id)
+        body = await request.json()
+        response_ids = body.get("response_ids")
+        expected_edits = body.get("expected_edits")
+        if not isinstance(response_ids, list) or not isinstance(expected_edits, int):
+            return JSONResponse(status_code=400, content={"error": {"message": "Invalid body"}})
+        registry = await _resolve_session_fs_registry(session_id)
+        if registry is None:
+            return JSONResponse(status_code=409, content={"error": {"message": "Unavailable"}})
+        try:
+            impact = await asyncio.to_thread(
+                registry.preview_tracked_edits,
+                session_id,
+                set(response_ids),
+                expected_edits=expected_edits,
+            )
+        except ValueError as exc:
+            return JSONResponse(status_code=409, content={"error": {"message": str(exc)}})
+        return JSONResponse(status_code=200, content=impact)
 
     @app.get(
         "/v1/sessions/{session_id}/resources/environments"

@@ -1282,6 +1282,19 @@ class ConversationStore(ABC):
         ...
 
     @abstractmethod
+    def revert_conversation(
+        self,
+        conversation_id: str,
+        *,
+        from_item_id: str,
+    ) -> list[str]:
+        """Delete a user message and later history, then clear runtime state.
+
+        Returns the discarded response ids in conversation order.
+        """
+        ...
+
+    @abstractmethod
     def switch_conversation_agent(
         self,
         conversation_id: str,
