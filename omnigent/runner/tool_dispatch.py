@@ -98,6 +98,7 @@ from omnigent.tools.builtins.timer import (
 )
 from omnigent.tools.builtins.update_comment import UpdateCommentTool
 from omnigent.tools.builtins.upload_file import UploadFileTool, safe_resolve
+from omnigent.tools.builtins.visualize import SysVisualizeTool
 
 _logger = logging.getLogger(__name__)
 
@@ -337,6 +338,9 @@ _BROWSER_TOOLS = frozenset(
     }
 )
 
+# Side-effect-free validation for wrapped/native harnesses.
+_VISUALIZATION_TOOLS = frozenset({SysVisualizeTool.name()})
+
 # Runner-side outer HTTP read timeout for a browser action POST. The read
 # budget (60s) MUST exceed the server-side browser-action await (30s) so the
 # runner never severs the still-open POST before the server returns either the
@@ -386,6 +390,7 @@ _NATIVE_RELAY_BUILTIN_TOOLS = (
     # ``ToolManager(spec).get_tool_schemas()``, so browser schemas appear
     # only when the spec declares the builtins (see builtins/__init__.py).
     | _BROWSER_TOOLS
+    | _VISUALIZATION_TOOLS
     # Memory builtins are relayed to native harnesses too — unlike web_search,
     # native harnesses have no built-in long-term memory of their own.
     | _HINDSIGHT_TOOLS
@@ -465,6 +470,7 @@ def build_native_relay_tool_schemas(spec: Any | None) -> list[dict[str, Any]]:
             SysAgentDownloadTool,
             SysAddPolicyTool,
             SysPolicyRegistryTool,
+            SysVisualizeTool,
         ):
             _append(_cls().get_schema()["function"])
 
@@ -528,6 +534,7 @@ _ALL_LOCAL_TOOLS = (
     | _COMMENT_TOOLS
     | _AGENT_TOOLS
     | _POLICY_TOOLS
+    | _VISUALIZATION_TOOLS
 )
 _PLACEHOLDER_CWDS = (None, "", ".", "./")
 
@@ -4682,6 +4689,11 @@ async def execute_tool(
                 args,
                 server_client=server_client,
                 conversation_id=conversation_id,
+            )
+        elif tool_name in _VISUALIZATION_TOOLS:
+            output = SysVisualizeTool().invoke(
+                arguments,
+                ToolContext(task_id=task_id or "", agent_id=agent_id or ""),
             )
         elif _is_spec_local_python_tool(tool_name, agent_spec):
             output = await _execute_local_python_tool(

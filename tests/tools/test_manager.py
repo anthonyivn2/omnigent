@@ -81,6 +81,8 @@ _ALWAYS_PRESENT_TOOLS: frozenset[str] = frozenset(
         "browser_click",
         "browser_type",
         "browser_screenshot",
+        # Framework-owned inline visualization tool.
+        "sys_visualize",
     }
 )
 

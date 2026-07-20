@@ -13792,7 +13792,12 @@ def create_runner_app(
         rename_instruction = session_rename_instruction(
             initial_session=_is_first_user_turn(_session_histories[conv])
         )
-        framework_instructions = (rename_instruction,) if rename_instruction else ()
+        from omnigent.runtime.prompt import visualization_display_instruction
+
+        display_instruction = visualization_display_instruction(msg_body.get("display_profile"))
+        framework_instructions = tuple(
+            instruction for instruction in (rename_instruction, display_instruction) if instruction
+        )
 
         harness_name: str | None = None
         spawn_env: dict[str, str] | None = None

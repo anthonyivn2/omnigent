@@ -9081,6 +9081,8 @@ async def _dispatch_skill_slash_command_to_runner(
     )
     if effective_runner_override is not None:
         runner_body["model_override"] = effective_runner_override
+    if body.display_profile is not None:
+        runner_body["display_profile"] = body.display_profile.model_dump()
     # Per-session brain-harness override — create-time only, so no
     # per-event value exists; the persisted column is the source.
     if conv.harness_override is not None:
@@ -9477,6 +9479,8 @@ async def _forward_event_to_runner(
     # and the model can't invoke client-side Read/Write/Glob/etc.
     if body.tools:
         runner_body["tools"] = body.tools
+    if body.display_profile is not None:
+        runner_body["display_profile"] = body.display_profile.model_dump()
     # Per-event override wins; fall back to the persisted column so a
     # UI / REPL PATCH applies even when the client doesn't repeat
     # model_override on every event. ``is not None`` over ``or`` per

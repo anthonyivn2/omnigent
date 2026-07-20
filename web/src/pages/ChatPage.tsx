@@ -101,6 +101,7 @@ import {
   bubblesEqual,
   createBubbleCache,
 } from "@/lib/renderItems";
+import { placeVisualizationReferences } from "@/lib/visualizationPlacement";
 import { getCurrentAuthorId } from "@/lib/identity";
 import { CLAUDE_NATIVE_MODELS } from "@/lib/claudeNativeModels";
 import { codexEffortLevelsForModel, findCodexModelOption } from "@/lib/codexNativeModels";
@@ -1515,10 +1516,17 @@ function MainAgentSurface({
   // Answered cards stay inline at their natural spot. `streamBubbles` keeps
   // `bubbles`' reference when nothing is pending, so the common case allocates
   // nothing.
-  const pendingElicitations = useMemo(() => collectPendingElicitations(bubbles), [bubbles]);
+  const visualizationBubbles = useMemo(() => placeVisualizationReferences(bubbles), [bubbles]);
+  const pendingElicitations = useMemo(
+    () => collectPendingElicitations(visualizationBubbles),
+    [visualizationBubbles],
+  );
   const streamBubbles = useMemo(
-    () => (pendingElicitations.length === 0 ? bubbles : stripPendingElicitations(bubbles)),
-    [bubbles, pendingElicitations.length],
+    () =>
+      pendingElicitations.length === 0
+        ? visualizationBubbles
+        : stripPendingElicitations(visualizationBubbles),
+    [visualizationBubbles, pendingElicitations.length],
   );
 
   // Cmd+Alt+↑/↓ (Ctrl+Alt on win/linux) — guarded so the composer's

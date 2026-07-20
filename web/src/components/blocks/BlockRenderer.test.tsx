@@ -89,6 +89,38 @@ describe("BlockRenderer dispatch", () => {
     expect(card.getAttribute("data-terminal-kind")).toBe("output");
   });
 
+  it("renders sys_visualize as a persistent visualization card", () => {
+    const items: RenderItem[] = [
+      {
+        kind: "tool",
+        itemId: "tool_1",
+        execution: {
+          name: "sys_visualize",
+          arguments: {
+            key: "revenue",
+            title: "Revenue",
+            summary: "Revenue rose.",
+            html: "<svg></svg>",
+          },
+          argsSummary: "",
+          callId: "call_1",
+          agentName: "agent",
+          executedBy: "server",
+          output: null,
+        },
+        output: '{"ok":true}',
+        state: "output-available",
+        startedAt: null,
+        duration: undefined,
+      },
+    ];
+
+    render(<BlockRenderer items={items} sessionStatus="idle" />);
+
+    expect(screen.getByTitle("Revenue")).toHaveAttribute("sandbox", "allow-scripts");
+    expect(screen.queryByText("See 1 step")).not.toBeInTheDocument();
+  });
+
   it("renders error diagnostics with local wrapping and preserved line breaks", () => {
     const message = [
       "Required terminal exited unexpectedly; the session runtime is no longer available.",

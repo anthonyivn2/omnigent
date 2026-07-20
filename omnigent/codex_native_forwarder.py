@@ -5442,6 +5442,50 @@ def _web_search_tool_call(call_id: str, item: dict[str, Any]) -> _CodexToolCall 
     )
 
 
+def _mcp_tool_call(call_id: str, item: dict[str, Any]) -> _CodexToolCall | None:
+    """Build a tool call from Codex's verified ``mcpToolCall`` item shape."""
+    server = item.get("server")
+    tool = item.get("tool")
+    arguments = item.get("arguments")
+    if not isinstance(server, str) or not server:
+        _logger.warning("Codex mcpToolCall missing server: call_id=%s", call_id)
+        return None
+    if not isinstance(tool, str) or not tool:
+        _logger.warning("Codex mcpToolCall missing tool: call_id=%s", call_id)
+        return None
+    if not isinstance(arguments, dict):
+        _logger.warning("Codex mcpToolCall arguments are not an object: call_id=%s", call_id)
+        return None
+
+    error = item.get("error")
+    if isinstance(error, dict) and isinstance(error.get("message"), str):
+        output = f"Error: {error['message']}"
+    elif isinstance(error, str):
+        output = f"Error: {error}"
+    else:
+        result = item.get("result")
+        content = result.get("content") if isinstance(result, dict) else None
+        texts = (
+            [
+                part["text"]
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            ]
+            if isinstance(content, list)
+            else []
+        )
+        output = "\n".join(texts)
+        if not output and result is not None:
+            output = _json_string(result) or ""
+
+    return _CodexToolCall(
+        call_id=call_id,
+        name=f"mcp__{server}__{tool}",
+        arguments=arguments,
+        output=output,
+    )
+
+
 def _image_view_tool_call(call_id: str, item: dict[str, Any]) -> _CodexToolCall | None:
     """
     Build a tool call from a Codex ``imageView`` item.
@@ -5507,14 +5551,12 @@ def _image_generation_tool_call(call_id: str, item: dict[str, Any]) -> _CodexToo
     )
 
 
-# Codex built-in tool item types this forwarder mirrors into Omnigent history.
-# ``mcpToolCall`` is intentionally absent: its event shape has not been
-# verified, so it is logged-but-skipped rather than mirrored with guessed
-# fields. Add it here once its real shape is captured.
+# Codex tool item types this forwarder mirrors into Omnigent history.
 _TOOL_ITEM_BUILDERS: dict[str, _ToolItemBuilder] = {
     "commandExecution": _command_execution_tool_call,
     "fileChange": _file_change_tool_call,
     "webSearch": _web_search_tool_call,
+    "mcpToolCall": _mcp_tool_call,
     "imageView": _image_view_tool_call,
     "imageGeneration": _image_generation_tool_call,
 }

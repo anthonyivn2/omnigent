@@ -14,6 +14,7 @@ import type { ConversationItem } from "./conversationItems";
 import { isMessageItem } from "./conversationItems";
 import type { MessageContentBlock } from "./blocks";
 import type { McpServerStartup } from "./events";
+import { getDisplayProfile } from "./displayProfile";
 import { authenticatedFetch } from "./identity";
 import { isAndroidShell, isElectronShell, isIOSShell } from "@/lib/nativeBridge";
 import type {
@@ -898,10 +899,15 @@ export async function postEvent(
   sessionId: string,
   event: SessionEventInput,
 ): Promise<PostEventResponse> {
+  const payload =
+    event.display_profile === undefined &&
+    (event.type === "message" || event.type === "slash_command")
+      ? { ...event, display_profile: getDisplayProfile() }
+      : event;
   const res = await authenticatedFetch(`/v1/sessions/${encodeURIComponent(sessionId)}/events`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(event),
+    body: JSON.stringify(payload),
   });
   // Throw a typed ApiError (not the bare status line) so callers can branch
   // on `code` — e.g. surface a friendly "runner didn't come online" message

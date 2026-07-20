@@ -925,7 +925,7 @@ describe("fetchInitialHistoryWindow", () => {
 });
 
 describe("postEvent", () => {
-  it("POSTs the event body verbatim and returns {queued, itemId}", async () => {
+  it("adds an ephemeral display profile and returns {queued, itemId}", async () => {
     fetchMock.mockResolvedValueOnce(mockJsonResponse({ queued: true, item_id: "ci_123" }));
     const event = {
       type: "message",
@@ -937,7 +937,16 @@ describe("postEvent", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/v1/sessions/conv_abc/events");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body as string)).toEqual(event);
+    const posted = JSON.parse(init.body as string);
+    expect(posted).toMatchObject(event);
+    expect(posted.display_profile).toMatchObject({
+      surface: "web",
+      canvas_width: expect.any(Number),
+      canvas_height: expect.any(Number),
+      layout: expect.stringMatching(/compact|regular|wide/),
+      pointer: expect.stringMatching(/coarse|fine/),
+      color_scheme: expect.stringMatching(/light|dark/),
+    });
     expect(out).toEqual({ queued: true, itemId: "ci_123" });
   });
 

@@ -1728,7 +1728,7 @@ describe("chatStore — send (first-send ordering)", () => {
     const eventBody = JSON.parse(
       (fetchMock.mock.calls[eventIndex]![1] as RequestInit).body as string,
     );
-    expect(eventBody).toEqual({
+    expect(eventBody).toMatchObject({
       type: "message",
       data: {
         role: "user",
@@ -2215,7 +2215,7 @@ describe("chatStore — sendSlashCommand", () => {
     // The wire shape must match the REPL's: type=slash_command, kind=skill,
     // name without leading slash, and the raw argument text. A regression to
     // a plaintext message would set type="message" and fail here.
-    expect(lastEventBody()).toEqual({
+    expect(lastEventBody()).toMatchObject({
       type: "slash_command",
       data: { kind: "skill", name: "grill-me", arguments: "review this plan" },
     });
@@ -2412,7 +2412,7 @@ describe("chatStore — send while streaming (queueing)", () => {
     );
     expect(events).toHaveLength(1);
     const body = JSON.parse((events[0]![1] as RequestInit).body as string);
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       type: "message",
       data: { role: "user", content: [{ type: "input_text", text: "queue me" }] },
     });

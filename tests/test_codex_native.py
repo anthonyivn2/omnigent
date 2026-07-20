@@ -5506,6 +5506,49 @@ def test_forwarder_posts_codex_command_execution_tool_call() -> None:
     ]
 
 
+def test_forwarder_posts_codex_mcp_tool_call() -> None:
+    """A completed MCP item preserves relay name, arguments, and text result."""
+    posted: list[dict[str, Any]] = []
+    arguments = {
+        "key": "quarterly-revenue-growth",
+        "title": "Quarterly Revenue Growth",
+        "summary": "Revenue rose every quarter and reached $2.1M in Q4.",
+        "html": "<svg></svg>",
+    }
+    acknowledgement = '{"ok":true,"title":"Quarterly Revenue Growth"}'
+
+    asyncio.run(
+        _replay_completed_item(
+            {
+                "type": "mcpToolCall",
+                "id": "call_visualize",
+                "server": "omnigent",
+                "tool": "sys_visualize",
+                "status": "completed",
+                "arguments": arguments,
+                "result": {
+                    "content": [{"type": "text", "text": acknowledgement}],
+                    "isError": False,
+                },
+                "error": None,
+            },
+            _capture_handler(posted),
+        )
+    )
+
+    assert [payload["data"]["item_type"] for payload in posted] == [
+        "function_call",
+        "function_call_output",
+    ]
+    call = posted[0]["data"]["item_data"]
+    assert call["name"] == "mcp__omnigent__sys_visualize"
+    assert json.loads(call["arguments"]) == arguments
+    assert posted[1]["data"]["item_data"] == {
+        "call_id": "call_visualize",
+        "output": acknowledgement,
+    }
+
+
 def test_forwarder_streams_codex_command_output_before_completed_item(tmp_path: Path) -> None:
     """Command output deltas update the live tool before its final result."""
     write_bridge_state(

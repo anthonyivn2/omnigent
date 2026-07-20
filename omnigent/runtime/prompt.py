@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Sequence
 from typing import Any
 
@@ -13,6 +15,81 @@ from omnigent.entities import (
     NativeToolData,
 )
 from omnigent.spec import AgentSpec
+
+_VISUALIZATION_TOOL_NAMES = frozenset({"sys_visualize", "mcp__omnigent__sys_visualize"})
+_DISPLAY_VALUES = {
+    "surface": frozenset({"web", "desktop", "ios", "android"}),
+    "layout": frozenset({"compact", "regular", "wide"}),
+    "orientation": frozenset({"portrait", "landscape"}),
+    "pointer": frozenset({"coarse", "fine"}),
+    "color_scheme": frozenset({"light", "dark"}),
+}
+
+
+def visualization_display_instruction(profile: object) -> str | None:
+    """Build the ephemeral layout hint appended to this turn's prompt."""
+    if not isinstance(profile, dict):
+        return None
+    for field, allowed in _DISPLAY_VALUES.items():
+        if profile.get(field) not in allowed:
+            return None
+    width = profile.get("viewport_width")
+    height = profile.get("viewport_height")
+    if (
+        isinstance(width, bool)
+        or not isinstance(width, int)
+        or not 240 <= width <= 4096
+        or isinstance(height, bool)
+        or not isinstance(height, int)
+        or not 240 <= height <= 4096
+    ):
+        return None
+    canvas_width = profile.get("canvas_width")
+    canvas_height = profile.get("canvas_height")
+    if canvas_width is None:
+        canvas_width = min(width, 768)
+    if canvas_height is None:
+        canvas_height = min(800, max(240, int(height * 0.6)))
+    if (
+        isinstance(canvas_width, bool)
+        or not isinstance(canvas_width, int)
+        or not 240 <= canvas_width <= 4096
+        or isinstance(canvas_height, bool)
+        or not isinstance(canvas_height, int)
+        or not 240 <= canvas_height <= 800
+    ):
+        return None
+    return (
+        "Current display profile for visualization generation: "
+        f"surface={profile['surface']}, viewport={width}x{height} CSS px, "
+        f"inline_canvas={canvas_width}x{canvas_height} CSS px, "
+        f"layout={profile['layout']}, orientation={profile['orientation']}, "
+        f"pointer={profile['pointer']}, color_scheme={profile['color_scheme']}. "
+        "When using sys_visualize, compose for the inline canvas rather than the full "
+        "viewport and keep the saved HTML/SVG/CSS fluid for replay on other devices. "
+        "Runtime render(context) calls receive the exact current canvas as "
+        "context.layout.width and context.layout.height."
+    )
+
+
+def _visualization_history_ref(arguments: str, call_id: str) -> str:
+    """Replace durable visual source with a compact model-facing reference."""
+    try:
+        payload = json.loads(arguments)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    ref = {
+        "visualization_ref": {
+            "call_id": call_id,
+            "key": payload.get("key", ""),
+            "title": payload.get("title", "Visualization"),
+            "summary": payload.get("summary", ""),
+            "payload_hash": f"sha256:{hashlib.sha256(arguments.encode()).hexdigest()}",
+        }
+    }
+    return json.dumps(ref, ensure_ascii=False, separators=(",", ":"))
 
 
 def append_framework_instructions(
@@ -155,12 +232,15 @@ def history_to_input_items(
 
         elif item.type == "function_call":
             assert isinstance(item.data, FunctionCallData)
+            arguments = item.data.arguments
+            if item.data.name in _VISUALIZATION_TOOL_NAMES:
+                arguments = _visualization_history_ref(arguments, item.data.call_id)
             result.append(
                 {
                     "type": "function_call",
                     "call_id": item.data.call_id,
                     "name": item.data.name,
-                    "arguments": item.data.arguments,
+                    "arguments": arguments,
                 }
             )
 

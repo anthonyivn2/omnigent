@@ -1102,6 +1102,22 @@ class ElicitationResult(BaseModel):
 # ── Sessions (/v1/sessions) ────────────────────────────────────
 
 
+class DisplayProfile(BaseModel):
+    """Coarse, ephemeral client capabilities for responsive generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    surface: Literal["web", "desktop", "ios", "android"]
+    viewport_width: Annotated[int, Strict(), Field(ge=240, le=4096)]
+    viewport_height: Annotated[int, Strict(), Field(ge=240, le=4096)]
+    canvas_width: Annotated[int, Strict(), Field(ge=240, le=4096)] | None = None
+    canvas_height: Annotated[int, Strict(), Field(ge=240, le=800)] | None = None
+    layout: Literal["compact", "regular", "wide"]
+    orientation: Literal["portrait", "landscape"]
+    pointer: Literal["coarse", "fine"]
+    color_scheme: Literal["light", "dark"]
+
+
 class SessionEventInput(BaseModel):
     """
     A single client-submitted event/input item for a session.
@@ -1140,6 +1156,8 @@ class SessionEventInput(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
     model_override: str | None = None
     tools: list[dict[str, Any]] | None = None
+    # Forwarded to the runner for this turn; never persisted as conversation data.
+    display_profile: DisplayProfile | None = None
 
 
 class SessionGitOptions(BaseModel):

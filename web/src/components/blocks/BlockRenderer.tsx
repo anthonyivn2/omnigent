@@ -23,6 +23,7 @@ import { ZoomableImage } from "@/components/ImageLightbox";
 import { useThrottledValue } from "@/hooks/useThrottledValue";
 import type { RenderItem } from "@/lib/renderItems";
 import type { SessionStatus } from "@/lib/types";
+import { VISUALIZATION_TOOL_NAMES } from "@/lib/visualizationPlacement";
 import { cn } from "@/lib/utils";
 import {
   useFileViewer,
@@ -38,6 +39,7 @@ import { SmartRoutingCard } from "./SmartRoutingCard";
 import { TerminalCommandCard } from "./TerminalCommandCard";
 import { ErrorBanner, PolicyDeniedBanner, RetryIndicator } from "./StatusBlocks";
 import { ToolCard, ToolGroupSummary } from "./ToolCard";
+import { VisualizationCard } from "./VisualizationCard";
 
 /**
  * Inline-`code` renderer that turns workspace file paths (e.g.
@@ -450,11 +452,12 @@ function renderToolRunFragment(
 
 const _ADVISE_MODELS_NAMES = new Set(["sys_advise_models", "mcp__omnigent__sys_advise_models"]);
 const _SESSION_SEND_NAMES = new Set(["sys_session_send", "mcp__omnigent__sys_session_send"]);
-
 function isPersistentToolCard(item: RenderItem): boolean {
   return (
     item.kind === "tool" &&
-    (_ADVISE_MODELS_NAMES.has(item.execution.name) || _SESSION_SEND_NAMES.has(item.execution.name))
+    (_ADVISE_MODELS_NAMES.has(item.execution.name) ||
+      _SESSION_SEND_NAMES.has(item.execution.name) ||
+      VISUALIZATION_TOOL_NAMES.has(item.execution.name))
   );
 }
 
@@ -514,6 +517,16 @@ function renderItem(
         />
       );
     case "tool":
+      if (VISUALIZATION_TOOL_NAMES.has(item.execution.name)) {
+        return (
+          <VisualizationCard
+            key={key}
+            arguments={item.execution.arguments}
+            output={item.output}
+            state={item.state}
+          />
+        );
+      }
       // Intelligent routing's fan-out sizing gets a structured plan card
       // instead of the generic name(json) row + raw-JSON expansion.
       if (_ADVISE_MODELS_NAMES.has(item.execution.name)) {

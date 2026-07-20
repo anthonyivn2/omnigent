@@ -62,6 +62,7 @@ from omnigent.tools.builtins.timer import (
     SysTimerSetTool,
 )
 from omnigent.tools.builtins.update_comment import UpdateCommentTool
+from omnigent.tools.builtins.visualize import SysVisualizeTool
 from omnigent.tools.builtins.web_search import WebSearchTool
 
 __all__ = [
@@ -88,6 +89,7 @@ __all__ = [
     "SysSessionShareTool",
     "SysTimerCancelTool",
     "SysTimerSetTool",
+    "SysVisualizeTool",
     "UpdateCommentTool",
     "WebSearchTool",
     "any_skill_has_resources",
@@ -275,6 +277,8 @@ _BUILTIN_REGISTRY: dict[str, _BuiltinFactory | None] = {
     "browser_click": None,
     "browser_type": None,
     "browser_screenshot": None,
+    # Framework-owned and auto-registered for every agent.
+    "sys_visualize": None,
 }
 
 # Hindsight long-term memory (optional ``hindsight`` extra). Registered only

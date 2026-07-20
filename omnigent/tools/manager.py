@@ -40,6 +40,7 @@ from omnigent.tools.builtins import (
     SysSessionShareTool,
     SysTimerCancelTool,
     SysTimerSetTool,
+    SysVisualizeTool,
     UpdateCommentTool,
     any_skill_has_resources,
     get_builtin_tool,
@@ -152,6 +153,7 @@ class ToolManager:
         self._os_env: OSEnvironment | None = None
         self._register_skill_tools()
         self._register_builtin_tools()
+        self._tools[SysVisualizeTool.name()] = SysVisualizeTool()
         self._register_sub_agent_tools()
         self._register_session_tools()
         self._register_agent_mgmt_tools()
@@ -822,6 +824,8 @@ class ToolManager:
         :raises OmnigentError: If any tool name is invalid.
         """
         for spec in specs:
+            if spec.name == SysVisualizeTool.name():
+                raise ValueError("client tool 'sys_visualize' cannot shadow a framework tool")
             if not is_valid_tool_name(spec.name):
                 raise OmnigentError(
                     f"Invalid client tool name {spec.name!r}: must match [a-zA-Z0-9_-]{{1,256}}",
